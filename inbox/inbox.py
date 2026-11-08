@@ -4,7 +4,6 @@
 只用 Python 標準庫（3.9 以上）。資料放在 $CLAUDE_INBOX_HOME（預設 ~/.claude-inbox）。
 """
 import argparse
-import fcntl
 import ipaddress
 import json
 import os
@@ -19,7 +18,54 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
+try:
+    import fcntl
+except ImportError:  # Windows
+    fcntl = None
+    import msvcrt
+
+IS_WINDOWS = os.name == 'nt'
+
+# Windows 的 stdout/stdin 預設是系統碼頁（例如 CP950），hook 的輸出要是 UTF-8 才會正確進到 agent。
+for _stream in (sys.stdin, sys.stdout, sys.stderr):
+    if _stream is not None and hasattr(_stream, 'reconfigure'):
+        try:
+            _stream.reconfigure(encoding='utf-8')
+        except (ValueError, OSError):
+            pass
+
+
+class FileLock:
+    """跨平台的獨佔檔案鎖：POSIX 用 flock，Windows 用 msvcrt.locking 鎖第一個位元組。"""
+
+    def __init__(self, path):
+        self.path = path
+
+    def __enter__(self):
+        self.fh = open(self.path, 'a+b')
+        if fcntl:
+            fcntl.flock(self.fh, fcntl.LOCK_EX)
+        else:
+            # notes: msvcrt.locking 的 LK_LOCK 只重試約 10 秒就丟 OSError，所以自己用 LK_NBLCK 輪詢。
+            #        鎖的是獨立的 .lock 檔，不是資料檔本身，避免影響 append 的寫入位置。
+            while True:
+                self.fh.seek(0)
+                try:
+                    msvcrt.locking(self.fh.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    time.sleep(0.05)
+        return self
+
+    def __exit__(self, *exc):
+        if fcntl:
+            fcntl.flock(self.fh, fcntl.LOCK_UN)
+        else:
+            self.fh.seek(0)
+            msvcrt.locking(self.fh.fileno(), msvcrt.LK_UNLCK, 1)
+        self.fh.close()
+
+HERE =Path(__file__).resolve().parent
 PAGE = HERE / 'page.html'
 DEFAULT_PORT = 7799
 MAX_BODY = 64 * 1024
@@ -47,8 +93,7 @@ def load_config():
     path = home() / 'config.json'
     config = read_config(path)
     if not config.get('token'):
-        with open(home() / 'config.lock', 'a') as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
+        with FileLock(home() / 'config.lock'):
             config = read_config(path)  # 搶到鎖後重讀，別人可能已經產生過
             if not config.get('token'):
                 config['token'] = secrets.token_urlsafe(24)
@@ -116,14 +161,18 @@ class EventLog:
     """events.jsonl 的讀寫，全部包在同一把檔案鎖裡。"""
 
     def __enter__(self):
-        fd = os.open(events_path(), os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o600)
-        self.fh = os.fdopen(fd, 'a+', encoding='utf-8')
-        fcntl.flock(self.fh, fcntl.LOCK_EX)
+        self.lock = FileLock(home() / 'events.lock').__enter__()
+        try:
+            fd = os.open(events_path(), os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o600)
+            self.fh = os.fdopen(fd, 'a+', encoding='utf-8')
+        except BaseException:
+            self.lock.__exit__(None, None, None)
+            raise
         return self
 
     def __exit__(self, *exc):
-        fcntl.flock(self.fh, fcntl.LOCK_UN)
         self.fh.close()
+        self.lock.__exit__(*exc)
 
     def read(self):
         self.fh.seek(0)
@@ -294,17 +343,23 @@ class Handler(BaseHTTPRequestHandler):
             self.send_text(404, 'not found')
 
     def do_POST(self):
+        try:
+            length = int(self.headers.get('Content-Length') or 0)
+        except ValueError:
+            length = -1
+        # 先把請求本文讀完再回錯誤：Windows 關閉還有未讀資料的連線會送 RST，
+        # 用戶端收不到 403/404，只看到 WinError 10053/10054。
+        raw = self.rfile.read(length) if 0 < length <= MAX_BODY else None
         if self.path != '/api/answer':
             return self.send_text(404, 'not found')
         if not self.check(api=True):
             return
         if not self.headers.get('Content-Type', '').startswith('application/json'):
             return self.send_text(415, '只收 JSON')
-        length = int(self.headers.get('Content-Length') or 0)
-        if length <= 0 or length > MAX_BODY:
+        if raw is None:
             return self.send_text(413, '內容太大或是空的')
         try:
-            payload = json.loads(self.rfile.read(length).decode('utf-8'))
+            payload = json.loads(raw.decode('utf-8'))
             questions = {q['id']: q for q in load_questions()}
             events = validate_answers(payload, questions)
         except ValueError as exc:
@@ -316,7 +371,14 @@ class Handler(BaseHTTPRequestHandler):
 
 def serve(config):
     Handler.config = config
-    server = ThreadingHTTPServer((config['host'], config['port']), Handler)
+    try:
+        server = ThreadingHTTPServer((config['host'], config['port']), Handler)
+    except PermissionError:
+        if IS_WINDOWS:  # WinError 10013：埠落在 Hyper-V／WinNAT 保留的範圍，沒人在用也綁不到
+            print('綁不到埠 %s：可能在 Windows 保留範圍內（netsh interface ipv4 show '
+                  'excludedportrange protocol=tcp）。請在 %s 設定其他 port。'
+                  % (config['port'], home() / 'config.json'), flush=True)
+        raise
     (home() / 'server.pid').write_text(str(os.getpid()))  # 綁埠成功才寫：搶輸的不會蓋掉活著的那個
     print('收件匣服務已啟動：' + base_url(config), flush=True)  # 服務的 log 不放 token
     server.serve_forever()
@@ -338,10 +400,19 @@ def server_alive(config):
 def ensure_server(config):
     if server_alive(config):
         return True
-    log = open(home() / 'server.log', 'a')
-    subprocess.Popen([sys.executable, str(Path(__file__).resolve()), 'serve'],
-                            stdin=subprocess.DEVNULL, stdout=log, stderr=log,
-                            start_new_session=True)
+    # 子行程拿到自己的 handle；父行程要關掉這份，否則 Windows 上 server.log 會一直被鎖住刪不掉。
+    with open(home() / 'server.log', 'a', encoding='utf-8') as log:
+        if IS_WINDOWS:
+            # 脫離目前的主控台：不跳視窗，也不會在 hook／終端機關閉時被一起結束（0xC000013A）。
+            flags = (subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+                     | subprocess.CREATE_NO_WINDOW)
+            subprocess.Popen([sys.executable, str(Path(__file__).resolve()), 'serve'],
+                             stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                             creationflags=flags, close_fds=True)
+        else:
+            subprocess.Popen([sys.executable, str(Path(__file__).resolve()), 'serve'],
+                             stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                             start_new_session=True)
     for _ in range(20):
         time.sleep(0.2)
         if server_alive(config):
@@ -408,7 +479,8 @@ def cmd_wait(args):
 def cmd_hook(args):
     """給 Claude Code hook 用：stdin 是 hook 的 JSON，stdout 會進 agent 的上下文。"""
     try:
-        data = json.loads(sys.stdin.read() or '{}')
+        # Windows PowerShell 5.1 寫 stdin 會先送 UTF-8 BOM，json.loads 遇到 BOM 會失敗。
+        data = json.loads(sys.stdin.read().lstrip('﻿') or '{}')
     except ValueError:
         data = {}
     pairs = take(data.get('session_id', ''), data.get('cwd') or os.getcwd())
