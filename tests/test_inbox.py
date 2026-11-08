@@ -243,7 +243,7 @@ class Server(Base):
         try:
             with mock.patch.object(inbox, 'ensure_server', REAL_ENSURE_SERVER):
                 self.assertTrue(inbox.ensure_server(config))
-            log = (Path(os.environ['CLAUDE_INBOX_HOME']) / 'server.log').read_text()
+            log = (Path(os.environ['CLAUDE_INBOX_HOME']) / 'server.log').read_text(encoding='utf-8')
             self.assertIn('收件匣服務已啟動', log)
             self.assertNotIn(config['token'], log)
         finally:  # 必須在測試本體清：tearDown 會先刪掉暫存資料夾與 PID 檔
@@ -252,6 +252,16 @@ class Server(Base):
                     os.kill(int(pid_file.read_text()), signal.SIGTERM)
                 except (ProcessLookupError, ValueError):
                     pass
+            # Windows：被終止的服務約 25ms 後才放開 server.log，tearDown 刪資料夾前要等它放開。
+            log_file = Path(os.environ['CLAUDE_INBOX_HOME']) / 'server.log'
+            for _ in range(80):
+                try:
+                    log_file.unlink()
+                    break
+                except FileNotFoundError:
+                    break
+                except PermissionError:
+                    time.sleep(0.025)
 
     def test_loopback_default_also_gets_private_token_and_folder(self):
         old = os.umask(0o022)  # 在寬鬆的 umask 下測，權限被放寬時才會變紅
@@ -259,13 +269,18 @@ class Server(Base):
         config = inbox.load_config()
         path = Path(os.environ['CLAUDE_INBOX_HOME']) / 'config.json'
         self.assertTrue(config['token'])
-        self.assertEqual(oct(path.stat().st_mode & 0o777), '0o600')
-        self.assertEqual(oct(path.parent.stat().st_mode & 0o777), '0o700')
+        self.assertMode(path, '0o600')
+        self.assertMode(path.parent, '0o700')
         self.assertEqual(inbox.load_config()['token'], config['token'])  # 第二次不重產
         qid = self.ask('--title', 't')
         self.answer(qid, choice='', text='x')
-        self.assertEqual(oct(inbox.events_path().stat().st_mode & 0o777), '0o600')
-        self.assertEqual(oct((path.parent / 'questions').stat().st_mode & 0o777), '0o700')
+        self.assertMode(inbox.events_path(), '0o600')
+        self.assertMode(path.parent / 'questions', '0o700')
+
+    def assertMode(self, path, mode):
+        # Windows 沒有 POSIX 權限位元（st_mode 一律 0o666/0o777），保護靠使用者資料夾的 ACL。
+        if os.name != 'nt':
+            self.assertEqual(oct(path.stat().st_mode & 0o777), mode)
 
     def test_non_loopback_host_gets_token_generated(self):
         path = Path(os.environ['CLAUDE_INBOX_HOME']) / 'config.json'
@@ -273,7 +288,7 @@ class Server(Base):
         path.write_text(json.dumps({'host': '100.64.0.1'}))
         config = inbox.load_config()
         self.assertTrue(config['token'])
-        self.assertEqual(oct(path.stat().st_mode & 0o777), '0o600')
+        self.assertMode(path, '0o600')
         self.assertIn('?t=' + config['token'], inbox.page_url(config))
 
 
