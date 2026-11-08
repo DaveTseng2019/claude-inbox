@@ -92,7 +92,7 @@ Claude Code 專用的「決定信箱」：agent 要你拍板的事，統一放�
 inbox ask --title "要不要上新版？" --option "A=上" --option "B=不上" --recommend A
 ```
 
-> `inbox` 指令是給 agent 的 Bash 用的。你自己在終端機試的話，改用 `python3 <plugin 資料夾>/inbox/inbox.py`，後面的參數一樣。
+> `inbox` 指令是給 agent 的 Bash 用的。你自己在終端機試的話，改用 `python3 <plugin 資料夾>/inbox/inbox.py`（Windows 用 `python`），後面的參數一樣。
 
 ## 你已經有自己的開發規則？疊上去，不要換掉
 
@@ -155,7 +155,7 @@ python3 /path/to/claude-inbox/inbox/inbox.py ask --title "..." --option "A=..." 
 { "host": "你的 Tailscale 或內網位址", "port": 7799 }
 ```
 
-位址只支援 IPv4。token 不分本機或遠端，第一次使用時自動產生，寫進同一個檔（檔案權限 600，資料夾權限 700）。改位址或換 token 後都要重新啟動服務：`inbox stop` 再 `inbox start`。執行中的服務不會自動套用新設定，舊 token 在它重啟前仍然有效。用 `inbox url` 可以印出帶 token 的完整網址。
+位址只支援 IPv4。token 不分本機或遠端，第一次使用時自動產生，寫進同一個檔（macOS／Linux 上檔案權限 600，資料夾權限 700）。改位址或換 token 後都要重新啟動服務：`inbox stop` 再 `inbox start`。執行中的服務不會自動套用新設定，舊 token 在它重啟前仍然有效。用 `inbox url` 可以印出帶 token 的完整網址。
 
 ### 資料放哪
 
@@ -182,12 +182,20 @@ python3 /path/to/claude-inbox/inbox/inbox.py ask --title "..." --option "A=..." 
 
 ### 需求
 
-Python 3.9 以上。答案自動送回 agent 需要 Claude Code；其他 agent 的用法見上方。支援 macOS、Linux 與 WSL（原生 Windows 不支援）。沒有其他依賴。
+Python 3.9 以上。答案自動送回 agent 需要 Claude Code；其他 agent 的用法見上方。支援 macOS、Linux、WSL 與原生 Windows。沒有其他依賴。
+
+### 原生 Windows
+
+- hook 與 `inbox` 指令走 `bin/inbox`（sh 腳本）：先試 `python3`，不能執行時改用 `python`。Windows 的 `python3` 常是 Microsoft Store 的捷徑，存在但不能執行，所以要有一個真的 `python` 在 PATH 上。
+- Claude Code 在 Windows 用 Git Bash 跑 hook，所以 `bin/inbox` 能直接執行。PowerShell 或 cmd 裡請用 `bin\inbox.cmd`。
+- 預設埠 7799 可能落在 Windows 保留的埠範圍裡（Hyper-V／WSL／Docker 會保留），沒人在用也綁不到，`server.log` 會寫出原因。用 `netsh interface ipv4 show excludedportrange protocol=tcp` 查，再在 `config.json` 換一個埠。
+- Windows 沒有 600／700 這種檔案權限，`~/.claude-inbox` 的保護靠使用者資料夾本身的存取控制。
+- 背景服務用沒有視窗的獨立行程啟動，關掉終端機不會把它一起關掉。
 
 ### 開發
 
 ```bash
-python3 -m unittest discover tests
+python3 -m unittest discover tests   # Windows 用 python
 ```
 
 </details>
