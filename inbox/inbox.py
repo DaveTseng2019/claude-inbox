@@ -501,6 +501,9 @@ def cmd_stop(args):
     pidfile = home() / 'server.pid'
     if not pidfile.exists():
         return print('沒有記錄中的服務')
+    if not server_alive(load_config()):  # 重開機後舊 PID 可能已分給別的程式，服務沒回應就不送 kill
+        print('服務本來就沒在跑')
+        return pidfile.unlink()
     try:
         os.kill(int(pidfile.read_text()), signal.SIGTERM)
         print('已停止')

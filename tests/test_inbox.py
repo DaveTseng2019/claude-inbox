@@ -272,7 +272,7 @@ class Server(Base):
         for name, kill in (('真的已結束行程', None),
                            ('Windows 的 OSError', mock.patch.object(inbox.os, 'kill',
                                                                      side_effect=OSError(22, 'WinError 87')))):
-            with self.subTest(name):
+            with self.subTest(name), mock.patch.object(inbox, 'server_alive', return_value=True):
                 pid_file.write_text(str(dead.pid))
                 with redirect_stdout(io.StringIO()) as out:
                     if kill:
@@ -282,6 +282,22 @@ class Server(Base):
                         inbox.main(['stop'])
                 self.assertIn('服務本來就沒在跑', out.getvalue())
                 self.assertFalse(pid_file.exists())
+
+    def test_stop_does_not_kill_unrelated_process_reusing_pid(self):
+        # 重開機後舊 PID 可能已經分給別的程式；服務沒在回應時只清 PID 檔，不能送 kill。
+        (inbox.home() / 'config.json').write_text(json.dumps({'port': free_port()}))
+        other = __import__('subprocess').Popen([sys.executable, '-c', 'import time; time.sleep(30)'],
+                                             cwd=tempfile.gettempdir())  # Windows：行程的工作目錄刪不掉，別佔住測試資料夾
+        self.addCleanup(other.wait)
+        self.addCleanup(other.kill)
+        pid_file = inbox.home() / 'server.pid'
+        pid_file.write_text(str(other.pid))
+        with redirect_stdout(io.StringIO()) as out:
+            inbox.main(['stop'])
+        self.assertIn('服務本來就沒在跑', out.getvalue())
+        self.assertFalse(pid_file.exists())
+        time.sleep(0.2)
+        self.assertIsNone(other.poll(), '不相干的程式被關掉了')
 
     def test_loopback_default_also_gets_private_token_and_folder(self):
         old = os.umask(0o022)  # 在寬鬆的 umask 下測，權限被放寬時才會變紅
