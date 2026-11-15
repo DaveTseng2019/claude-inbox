@@ -65,7 +65,8 @@ class FileLock:
             msvcrt.locking(self.fh.fileno(), msvcrt.LK_UNLCK, 1)
         self.fh.close()
 
-HERE =Path(__file__).resolve().parent
+
+HERE = Path(__file__).resolve().parent
 PAGE = HERE / 'page.html'
 DEFAULT_PORT = 7799
 MAX_BODY = 64 * 1024
@@ -480,7 +481,7 @@ def cmd_hook(args):
     """給 Claude Code hook 用：stdin 是 hook 的 JSON，stdout 會進 agent 的上下文。"""
     try:
         # Windows PowerShell 5.1 寫 stdin 會先送 UTF-8 BOM，json.loads 遇到 BOM 會失敗。
-        data = json.loads(sys.stdin.read().lstrip('﻿') or '{}')
+        data = json.loads(sys.stdin.read().lstrip('\ufeff') or '{}')
     except ValueError:
         data = {}
     pairs = take(data.get('session_id', ''), data.get('cwd') or os.getcwd())
@@ -503,7 +504,7 @@ def cmd_stop(args):
     try:
         os.kill(int(pidfile.read_text()), signal.SIGTERM)
         print('已停止')
-    except (ProcessLookupError, ValueError):
+    except (OSError, ValueError):  # Windows 找不到行程時丟一般 OSError，不是 ProcessLookupError
         print('服務本來就沒在跑')
     pidfile.unlink()
 

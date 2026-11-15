@@ -1,0 +1,34 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.x"]
+        include:
+          - os: ubuntu-latest
+            python: "3.9" # README 寫的最低版本
+    runs-on: ${{ matrix.os }}
+    env:
+      CLAUDE_INBOX_HOME: ${{ github.workspace }}/.inbox-home
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: unit tests
+        run: python -m unittest discover tests
+      - name: bin/inbox hook（Windows 上是 Claude Code 跑 hook 的 Git Bash）
+        shell: bash
+        run: echo '{}' | ./bin/inbox hook
+      - name: bin\inbox.cmd
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: bin\inbox.cmd list

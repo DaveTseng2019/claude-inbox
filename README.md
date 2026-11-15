@@ -186,7 +186,7 @@ Python 3.9 以上。答案自動送回 agent 需要 Claude Code；其他 agent �
 
 ### 原生 Windows
 
-- hook 與 `inbox` 指令走 `bin/inbox`（sh 腳本）：先試 `python3`，不能執行時改用 `python`。Windows 的 `python3` 常是 Microsoft Store 的捷徑，存在但不能執行，所以要有一個真的 `python` 在 PATH 上。
+- hook 與 `inbox` 指令走 `bin/inbox`（sh 腳本）：依序試 `python3`、`python`、`py -3`，用第一個能執行的。Windows 的 `python3`／`python` 常是 Microsoft Store 的捷徑，存在但不能執行；從 python.org 安裝又沒勾「加入 PATH」時，只有 `py` 能用。
 - Claude Code 在 Windows 用 Git Bash 跑 hook，所以 `bin/inbox` 能直接執行。PowerShell 或 cmd 裡請用 `bin\inbox.cmd`。
 - 預設埠 7799 可能落在 Windows 保留的埠範圍裡（Hyper-V／WSL／Docker 會保留），沒人在用也綁不到，`server.log` 會寫出原因。用 `netsh interface ipv4 show excludedportrange protocol=tcp` 查，再在 `config.json` 換一個埠。
 - Windows 沒有 600／700 這種檔案權限，`~/.claude-inbox` 的保護靠使用者資料夾本身的存取控制。

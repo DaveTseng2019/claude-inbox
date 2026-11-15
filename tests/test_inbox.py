@@ -250,7 +250,7 @@ class Server(Base):
             if pid_file.exists():
                 try:
                     os.kill(int(pid_file.read_text()), signal.SIGTERM)
-                except (ProcessLookupError, ValueError):
+                except (OSError, ValueError):
                     pass
             # Windows：被終止的服務約 25ms 後才放開 server.log，tearDown 刪資料夾前要等它放開。
             log_file = Path(os.environ['CLAUDE_INBOX_HOME']) / 'server.log'
@@ -262,6 +262,26 @@ class Server(Base):
                     break
                 except PermissionError:
                     time.sleep(0.025)
+
+    def test_stop_with_stale_pid_file_cleans_up(self):
+        # 重開機後 server.pid 會指向不存在的行程。Windows 的 os.kill 這時丟一般 OSError（WinError 87），
+        # 不是 ProcessLookupError，所以兩種都要測。
+        dead = __import__('subprocess').Popen([sys.executable, '-c', ''])
+        dead.wait()
+        pid_file = inbox.home() / 'server.pid'
+        for name, kill in (('真的已結束行程', None),
+                           ('Windows 的 OSError', mock.patch.object(inbox.os, 'kill',
+                                                                     side_effect=OSError(22, 'WinError 87')))):
+            with self.subTest(name):
+                pid_file.write_text(str(dead.pid))
+                with redirect_stdout(io.StringIO()) as out:
+                    if kill:
+                        with kill:
+                            inbox.main(['stop'])
+                    else:
+                        inbox.main(['stop'])
+                self.assertIn('服務本來就沒在跑', out.getvalue())
+                self.assertFalse(pid_file.exists())
 
     def test_loopback_default_also_gets_private_token_and_folder(self):
         old = os.umask(0o022)  # 在寬鬆的 umask 下測，權限被放寬時才會變紅
