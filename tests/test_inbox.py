@@ -286,7 +286,8 @@ class Server(Base):
     def test_stop_does_not_kill_unrelated_process_reusing_pid(self):
         # 重開機後舊 PID 可能已經分給別的程式；服務沒在回應時只清 PID 檔，不能送 kill。
         (inbox.home() / 'config.json').write_text(json.dumps({'port': free_port()}))
-        other = __import__('subprocess').Popen([sys.executable, '-c', 'import time; time.sleep(30)'])
+        other = __import__('subprocess').Popen([sys.executable, '-c', 'import time; time.sleep(30)'],
+                                             cwd=tempfile.gettempdir())  # Windows：行程的工作目錄刪不掉，別佔住測試資料夾
         self.addCleanup(other.wait)
         self.addCleanup(other.kill)
         pid_file = inbox.home() / 'server.pid'
