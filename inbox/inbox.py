@@ -223,17 +223,22 @@ def build_state(events=None):
 
 def deliverable(session_id, cwd, events=None):
     """這個 session 該拿到、還沒拿過的回答。"""
-    project = project_of(cwd)
+    # 要比對專案時才查：project_of 會啟動 git，而 hook 每一輪都跑到這裡。沒有待送回答時不付這個成本。
+    project = None
     now = time.time()
     out = []
     for q in build_state(events)['questions']:
+        pending = [a for a in q['answers'] if not a['delivered']]
+        if not pending:
+            continue
         asker = q.get('session')
         own = bool(asker) and asker == session_id  # 出題的就是這個 session：不管現在在哪個資料夾
-        if not own and q.get('project') != project:
-            continue
-        for a in q['answers']:
-            if a['delivered']:
+        if not own:
+            if project is None:
+                project = project_of(cwd)
+            if q.get('project') != project:
                 continue
+        for a in pending:
             age = now - datetime.fromisoformat(a['at']).timestamp()
             if own or not asker or age > ORPHAN_SECONDS:
                 out.append((q, a))
