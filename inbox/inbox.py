@@ -4,6 +4,7 @@
 只用 Python 標準庫（3.9 以上）。資料放在 $CLAUDE_INBOX_HOME（預設 ~/.claude-inbox）。
 """
 import argparse
+import functools
 import ipaddress
 import json
 import os
@@ -15,7 +16,6 @@ import tempfile
 import time
 import uuid
 from datetime import datetime
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 try:
@@ -300,82 +300,92 @@ def validate_answers(payload, questions):
 
 # ---------- 網頁服務 ----------
 
-class Handler(BaseHTTPRequestHandler):
-    config = None
+@functools.lru_cache(maxsize=None)
+def _handler_class():
+    # notes: http.server costs ~0.21 s to import on Windows and only serve() needs it, so it loads here,
+    #        not at module level (the hook path runs on every session start).
+    from http.server import BaseHTTPRequestHandler
 
-    def log_message(self, fmt, *args):
-        pass
+    class Handler(BaseHTTPRequestHandler):
+        config = None
 
-    def allowed_hosts(self):
-        port = self.config['port']
-        hosts = {'%s:%s' % (self.config['host'], port)}
-        if is_loopback(self.config['host']):
-            hosts |= {'localhost:%s' % port, '127.0.0.1:%s' % port}
-        return hosts
+        def log_message(self, fmt, *args):
+            pass
 
-    def check(self, api):
-        host = self.headers.get('Host', '')
-        if host not in self.allowed_hosts():
-            return self.send_text(403, 'Host 不符')
-        origin = self.headers.get('Origin')
-        if origin and origin != 'http://' + host:
-            return self.send_text(403, 'Origin 不符')
-        token = self.config.get('token')
-        if api and token and not secrets.compare_digest(self.headers.get('X-Inbox-Token', ''), token):
-            return self.send_text(401, '需要 token')
-        return True
+        def allowed_hosts(self):
+            port = self.config['port']
+            hosts = {'%s:%s' % (self.config['host'], port)}
+            if is_loopback(self.config['host']):
+                hosts |= {'localhost:%s' % port, '127.0.0.1:%s' % port}
+            return hosts
 
-    def send_text(self, code, text, ctype='text/plain; charset=utf-8'):
-        body = text.encode('utf-8')
-        self.send_response(code)
-        self.send_header('Content-Type', ctype)
-        self.send_header('Content-Length', str(len(body)))
-        self.send_header('Cache-Control', 'no-store')
-        self.send_header('X-Content-Type-Options', 'nosniff')
-        self.end_headers()
-        self.wfile.write(body)
-        return False
+        def check(self, api):
+            host = self.headers.get('Host', '')
+            if host not in self.allowed_hosts():
+                return self.send_text(403, 'Host 不符')
+            origin = self.headers.get('Origin')
+            if origin and origin != 'http://' + host:
+                return self.send_text(403, 'Origin 不符')
+            token = self.config.get('token')
+            if api and token and not secrets.compare_digest(self.headers.get('X-Inbox-Token', ''), token):
+                return self.send_text(401, '需要 token')
+            return True
 
-    def do_GET(self):
-        path = self.path.split('?', 1)[0]
-        if path == '/':
-            if self.check(api=False):
-                self.send_text(200, PAGE.read_text(encoding='utf-8'), 'text/html; charset=utf-8')
-        elif path == '/api/state':
-            if self.check(api=True):
-                self.send_text(200, json.dumps(build_state(), ensure_ascii=False),
-                               'application/json; charset=utf-8')
-        else:
-            self.send_text(404, 'not found')
+        def send_text(self, code, text, ctype='text/plain; charset=utf-8'):
+            body = text.encode('utf-8')
+            self.send_response(code)
+            self.send_header('Content-Type', ctype)
+            self.send_header('Content-Length', str(len(body)))
+            self.send_header('Cache-Control', 'no-store')
+            self.send_header('X-Content-Type-Options', 'nosniff')
+            self.end_headers()
+            self.wfile.write(body)
+            return False
 
-    def do_POST(self):
-        try:
-            length = int(self.headers.get('Content-Length') or 0)
-        except ValueError:
-            length = -1
-        # 先把請求本文讀完再回錯誤：Windows 關閉還有未讀資料的連線會送 RST，
-        # 用戶端收不到 403/404，只看到 WinError 10053/10054。
-        raw = self.rfile.read(length) if 0 < length <= MAX_BODY else None
-        if self.path != '/api/answer':
-            return self.send_text(404, 'not found')
-        if not self.check(api=True):
-            return
-        if not self.headers.get('Content-Type', '').startswith('application/json'):
-            return self.send_text(415, '只收 JSON')
-        if raw is None:
-            return self.send_text(413, '內容太大或是空的')
-        try:
-            payload = json.loads(raw.decode('utf-8'))
-            questions = {q['id']: q for q in load_questions()}
-            events = validate_answers(payload, questions)
-        except ValueError as exc:
-            return self.send_text(400, str(exc))
-        with EventLog() as log:
-            log.append(events)
-        self.send_text(200, json.dumps({'stored': len(events)}), 'application/json')
+        def do_GET(self):
+            path = self.path.split('?', 1)[0]
+            if path == '/':
+                if self.check(api=False):
+                    self.send_text(200, PAGE.read_text(encoding='utf-8'), 'text/html; charset=utf-8')
+            elif path == '/api/state':
+                if self.check(api=True):
+                    self.send_text(200, json.dumps(build_state(), ensure_ascii=False),
+                                   'application/json; charset=utf-8')
+            else:
+                self.send_text(404, 'not found')
+
+        def do_POST(self):
+            try:
+                length = int(self.headers.get('Content-Length') or 0)
+            except ValueError:
+                length = -1
+            # 先把請求本文讀完再回錯誤：Windows 關閉還有未讀資料的連線會送 RST，
+            # 用戶端收不到 403/404，只看到 WinError 10053/10054。
+            raw = self.rfile.read(length) if 0 < length <= MAX_BODY else None
+            if self.path != '/api/answer':
+                return self.send_text(404, 'not found')
+            if not self.check(api=True):
+                return
+            if not self.headers.get('Content-Type', '').startswith('application/json'):
+                return self.send_text(415, '只收 JSON')
+            if raw is None:
+                return self.send_text(413, '內容太大或是空的')
+            try:
+                payload = json.loads(raw.decode('utf-8'))
+                questions = {q['id']: q for q in load_questions()}
+                events = validate_answers(payload, questions)
+            except ValueError as exc:
+                return self.send_text(400, str(exc))
+            with EventLog() as log:
+                log.append(events)
+            self.send_text(200, json.dumps({'stored': len(events)}), 'application/json')
+
+    return Handler
 
 
 def serve(config):
+    from http.server import ThreadingHTTPServer
+    Handler = _handler_class()
     Handler.config = config
     try:
         server = ThreadingHTTPServer((config['host'], config['port']), Handler)
@@ -549,6 +559,13 @@ def main(argv=None):
     sub.add_parser('url', help='印出網址').set_defaults(func=lambda a: print(page_url(load_config())))
     args = parser.parse_args(argv)
     args.func(args)
+
+
+def __getattr__(name):
+    # inbox.Handler (used by the tests) still works; the class is built on first access.
+    if name == 'Handler':
+        return _handler_class()
+    raise AttributeError(name)
 
 
 if __name__ == '__main__':
