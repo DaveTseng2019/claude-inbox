@@ -1,9 +1,19 @@
 #!/bin/sh
 # 收件匣指令入口：plugin 啟用時 Claude Code 會把 bin/ 放進 PATH。
-# 依序試 python3、python、py -3，用第一個真的能執行的。
-# Windows 的 python3／python 常是 Microsoft Store 別名（存在但不能執行）；
+# 第一輪：路徑不在 WindowsApps 底下的 python3／python，直接執行，不先試跑。
+# 第二輪：WindowsApps 底下的 python3／python 常是 Microsoft Store 別名（存在但不能執行），
+# 也可能是真的從 Store 安裝的 Python，所以先試跑，能執行才用。
 # 從 python.org 安裝又沒勾「加入 PATH」時，只有 py 啟動器能用。
+# notes: 第一輪不試跑。hook 每一輪都執行這支腳本，試跑一次約 0.2～0.5 秒（Windows 實測）。
+#        代價：PATH 上有壞掉的 python（不在 WindowsApps）時，不會退到下一個。遇到時把試跑加回第一輪。
 script="$(dirname "$0")/../inbox/inbox.py"
+for py in python3 python; do
+  p="$(command -v "$py" 2>/dev/null)" || continue
+  case "$p" in
+    */WindowsApps/*) continue ;;
+  esac
+  exec "$py" "$script" "$@"
+done
 for py in python3 python; do
   if "$py" -c '' >/dev/null 2>&1; then
     exec "$py" "$script" "$@"

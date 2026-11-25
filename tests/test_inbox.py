@@ -140,6 +140,12 @@ class Delivery(Base):
         with mock.patch.object(inbox.time, 'time', return_value=later):
             self.assertEqual(len(inbox.take('sess-2', str(self.project))), 1)
 
+    def test_no_pending_answer_does_not_look_up_project(self):
+        self.ask('--title', 't', '--option', 'A=甲')  # 有題目、沒有回答
+        with mock.patch.object(inbox, 'project_of') as project_of:
+            self.assertEqual(inbox.take('sess-2', str(self.project)), [])
+        project_of.assert_not_called()
+
     def test_hook_reads_stdin_and_prints_answers(self):
         qid = self.ask('--title', '問題標題', '--option', 'A=甲')
         self.answer(qid)
